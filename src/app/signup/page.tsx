@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { sanitizeTimezone } from '@/lib/utils/timezone'
-import { getSafeAuthErrorMessage, mapSupabaseErrorToCode } from '@/lib/utils/auth'
+import { getSafeAuthErrorMessage, mapSupabaseErrorToCode, logAuthDiagnostic } from '@/lib/utils/auth'
 
 interface SignupPageProps {
   searchParams: Promise<{ error?: string }>
@@ -40,14 +40,8 @@ async function signup(formData: FormData) {
   })
 
   if (error) {
-    // Diagnostic log on server side only — never log credentials or sensitive data
-    console.error('[auth/signup failure]', {
-      status: error.status,
-      name: error.name,
-      message: error.message,
-    })
-
     const safeErrorCode = mapSupabaseErrorToCode(error.message, true)
+    logAuthDiagnostic('signup_failure', safeErrorCode, error.status)
     redirect(`/signup?error=${encodeURIComponent(safeErrorCode)}`)
   }
 

@@ -101,23 +101,29 @@ declare
   v_msg_conv_id uuid;
   v_msg_user_id uuid;
 begin
-  select user_id into v_conv_user_id
-  from public.conversations
-  where id = new.conversation_id;
+  -- Validate conversation relationship if conversation_id is provided
+  if new.conversation_id is not null then
+    select user_id into v_conv_user_id
+    from public.conversations
+    where id = new.conversation_id;
 
-  if v_conv_user_id is null then
-    raise exception 'Target conversation does not exist';
+    if v_conv_user_id is null then
+      raise exception 'Target conversation does not exist';
+    end if;
+
+    if new.user_id is distinct from v_conv_user_id then
+      raise exception 'research_snapshot user_id must match conversation user_id';
+    end if;
+
+    if tg_op = 'UPDATE' and old.conversation_id is not null and new.conversation_id is distinct from old.conversation_id then
+      raise exception 'Cannot reassign research snapshot to a different conversation';
+    end if;
+  elsif tg_op = 'INSERT' then
+    -- Snapshots must be initially created within a conversation
+    raise exception 'research_snapshot must be associated with a conversation';
   end if;
 
-  if new.user_id is distinct from v_conv_user_id then
-    raise exception 'research_snapshot user_id must match conversation user_id';
-  end if;
-
-  if tg_op = 'UPDATE' and new.conversation_id is distinct from old.conversation_id then
-    raise exception 'Cannot reassign research snapshot to a different conversation';
-  end if;
-
-  -- Verify optional trigger_message_id reference matches conversation and user
+  -- Verify optional trigger_message_id reference matches user and (if conversation present) conversation
   if new.trigger_message_id is not null then
     select conversation_id, user_id into v_msg_conv_id, v_msg_user_id
     from public.messages
@@ -127,7 +133,7 @@ begin
       raise exception 'Referenced trigger message does not exist';
     end if;
 
-    if v_msg_conv_id is distinct from new.conversation_id then
+    if new.conversation_id is not null and v_msg_conv_id is distinct from new.conversation_id then
       raise exception 'Referenced trigger message must belong to the same conversation as the snapshot';
     end if;
 
@@ -157,20 +163,69 @@ as $$
 begin
   if tg_op = 'UPDATE' then
     if old.status in ('completed', 'failed', 'partial') then
+      -- Allow ONLY referential nulling from ON DELETE SET NULL cascades
+      -- (when parent conversation or trigger message is deleted).
+      -- All other columns (id, user_id, query, status, search_params, created_at, completed_at)
+      -- MUST remain strictly unchanged.
+      -- Note on Security Boundary:
+      -- PostgreSQL triggers cannot natively inspect whether an UPDATE was initiated
+      -- by an engine foreign-key action vs privileged direct SQL. Ordinary authenticated
+      -- users are strictly prevented from initiating updates on finalized snapshots via RLS
+      -- (research_snapshots_update_lifecycle requires status = 'pending').
+      if new.id is not distinct from old.id and
+         new.user_id is not distinct from old.user_id and
+         new.query is not distinct from old.query and
+         new.status is not distinct from old.status and
+         new.search_params is not distinct from old.search_params and
+         new.created_at is not distinct from old.created_at and
+         new.completed_at is not distinct from old.completed_at and
+         (new.conversation_id is not distinct from old.conversation_id or (new.conversation_id is null and old.conversation_id is not null)) and
+         (new.trigger_message_id is not distinct from old.trigger_message_id or (new.trigger_message_id is null and old.trigger_message_id is not null)) then
+        return new;
+      end if;
+
       raise exception 'Completed or finalized research snapshots are immutable';
     end if;
 
     -- While in pending state, prevent mutating core identity and query attributes
     if new.id is distinct from old.id or
        new.user_id is distinct from old.user_id or
-       new.conversation_id is distinct from old.conversation_id or
        new.query is distinct from old.query or
        new.created_at is distinct from old.created_at then
-      raise exception 'Cannot modify snapshot identity, conversation, query, or creation timestamp';
+      raise exception 'Cannot modify snapshot identity, user, query, or creation timestamp';
     end if;
+
+    -- Lifecycle transition from pending to finalized (completed, failed, partial)
+    if new.status in ('completed', 'failed', 'partial') then
+      -- Finalization MUST retain a valid non-null conversation reference
+      if new.conversation_id is null then
+        raise exception 'Finalized research snapshot must retain a valid conversation reference';
+      end if;
+      -- Cannot reassign to a different conversation during finalization
+      if new.conversation_id is distinct from old.conversation_id then
+        raise exception 'Cannot reassign conversation during snapshot finalization';
+      end if;
+    elsif new.status = 'pending' then
+      -- While remaining pending, cannot detach or reassign conversation
+      if new.conversation_id is distinct from old.conversation_id then
+        raise exception 'Cannot detach or reassign conversation of a pending research snapshot';
+      end if;
+    else
+      raise exception 'Invalid snapshot status transition: %', new.status;
+    end if;
+
   elsif tg_op = 'DELETE' then
     if old.status in ('completed', 'failed', 'partial') then
-      raise exception 'Completed or finalized research snapshots cannot be deleted';
+      -- Account deletion semantics:
+      -- When a user's account is deleted (DELETE FROM auth.users / public.profiles),
+      -- the foreign key cascades (ON DELETE CASCADE) to research_snapshots.
+      -- If the owning profile row has already been deleted in this transaction,
+      -- we permit the cascade so personal data is not retained indefinitely.
+      -- However, if the owning profile STILL EXISTS, this is a forbidden direct
+      -- deletion of finalized research evidence.
+      if exists (select 1 from public.profiles where id = old.user_id) then
+        raise exception 'Completed or finalized research snapshots cannot be deleted while user profile exists';
+      end if;
     end if;
   end if;
 
@@ -189,6 +244,7 @@ as $$
 declare
   v_status text;
   v_snapshot_id uuid;
+  v_profile_exists boolean;
 begin
   if tg_table_name = 'research_claims' then
     v_snapshot_id := case when tg_op = 'DELETE' then old.snapshot_id else new.snapshot_id end;
@@ -198,9 +254,20 @@ begin
     where id = case when tg_op = 'DELETE' then old.claim_id else new.claim_id end;
   end if;
 
-  select status into v_status
-  from public.research_snapshots
-  where id = v_snapshot_id;
+  -- If parent snapshot is already deleted (e.g. cascaded account deletion), allow deletion
+  if v_snapshot_id is null then
+    return coalesce(new, old);
+  end if;
+
+  select s.status, exists(select 1 from public.profiles p where p.id = s.user_id)
+  into v_status, v_profile_exists
+  from public.research_snapshots s
+  where s.id = v_snapshot_id;
+
+  -- Account deletion cascade: if owning snapshot is gone or profile was deleted, allow cascade delete
+  if v_status is null or (tg_op = 'DELETE' and not coalesce(v_profile_exists, false)) then
+    return coalesce(new, old);
+  end if;
 
   if v_status in ('completed', 'failed', 'partial') then
     raise exception 'Cannot add, modify, or delete claims or sources for a finalized research snapshot';
@@ -336,6 +403,7 @@ create policy "research_snapshots_insert_pending"
   with check (
     (select auth.uid()) = user_id
     and status = 'pending'
+    and conversation_id is not null
   );
 
 create policy "research_snapshots_update_lifecycle"
@@ -348,6 +416,7 @@ create policy "research_snapshots_update_lifecycle"
   with check (
     (select auth.uid()) = user_id
     and status in ('completed', 'failed', 'partial')
+    and conversation_id is not null
   );
 
 create policy "research_snapshots_delete_pending_only"

@@ -7,7 +7,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getSafeRedirectUrl } from '@/lib/utils/url'
-import { getSafeAuthErrorMessage, mapSupabaseErrorToCode } from '@/lib/utils/auth'
+import { getSafeAuthErrorMessage, mapSupabaseErrorToCode, logAuthDiagnostic } from '@/lib/utils/auth'
 
 interface LoginPageProps {
   searchParams: Promise<{ error?: string; redirectTo?: string }>
@@ -24,14 +24,8 @@ async function login(formData: FormData) {
   const { error } = await supabase.auth.signInWithPassword({ email, password })
 
   if (error) {
-    // Diagnostic log on server side only — never log credentials or sensitive data
-    console.error('[auth/login failure]', {
-      status: error.status,
-      name: error.name,
-      message: error.message,
-    })
-
     const safeErrorCode = mapSupabaseErrorToCode(error.message, false)
+    logAuthDiagnostic('login_failure', safeErrorCode, error.status)
     redirect(`/login?error=${encodeURIComponent(safeErrorCode)}&redirectTo=${encodeURIComponent(safeRedirect)}`)
   }
 

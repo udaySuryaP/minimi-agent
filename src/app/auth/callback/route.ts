@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getSafeRedirectUrl } from '@/lib/utils/url'
+import { logAuthDiagnostic } from '@/lib/utils/auth'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
     if (!error) {
       return NextResponse.redirect(`${origin}${safeNext}`)
     }
-    console.error('[auth/callback failure]', { message: error.message })
+    logAuthDiagnostic('callback_failure', 'auth_callback_failed', error.status)
   }
 
   // Auth failed — redirect to login with a safe error code

@@ -43,6 +43,23 @@ export function getSafeRedirectUrl(target: string | null | undefined, fallback =
     return fallback
   }
 
+  // Reject malformed percent escapes (e.g. %ZZ, %2, lone %)
+  // In a valid URI, every '%' must be followed by two hexadecimal digits.
+  if (/%(?![0-9a-fA-F]{2})/.test(trimmed)) {
+    return fallback
+  }
+
+  // Verify that percent escapes decode cleanly and do not introduce dangerous characters (e.g. %5C for \)
+  try {
+    const decoded = decodeURI(trimmed)
+    if (decoded.includes('\\') || /[\u0000-\u001F\u007F]/.test(decoded)) {
+      return fallback
+    }
+  } catch {
+    // decodeURI throws URIError on malformed percent encoding
+    return fallback
+  }
+
   try {
     // Parse against a dummy local base to verify structure
     const parsed = new URL(trimmed, 'http://localhost')

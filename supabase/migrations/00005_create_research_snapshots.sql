@@ -6,7 +6,7 @@
 create table if not exists public.research_snapshots (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles(id) on delete cascade,
-  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  conversation_id uuid references public.conversations(id) on delete set null,
   trigger_message_id uuid references public.messages(id) on delete set null,
   query text not null,
   status text not null default 'pending' check (status in ('pending', 'completed', 'failed', 'partial')),

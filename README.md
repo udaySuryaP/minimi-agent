@@ -103,13 +103,62 @@ Post-login and callback redirects are strictly validated via `getSafeRedirectUrl
 - `enforce_memory_item_ownership()`: Enforces that any referenced `message_id` belongs to the exact same conversation and user.
 - `enforce_snapshot_ownership()`: Enforces that any referenced `trigger_message_id` belongs to the exact same conversation and user.
 
-### 3. Research Snapshot Immutability Lifecycle
-- New snapshots are created in `'pending'` state.
-- Claims and sources can only be attached while the snapshot is `'pending'`.
-- Upon completion, the snapshot transitions to `'completed'`, `'failed'`, or `'partial'` with `completed_at` set.
-- Once finalized, database triggers and RLS policies strictly forbid any further updates or deletions to snapshots, claims, or sources. Historical evidence remains immutable.
+### 3. Research Snapshot Immutability Lifecycle, Referential Cleanup & Account Deletion
+- **Creation & Finalization:**
+  - New snapshots are created in `'pending'` state with a mandatory, non-null `conversation_id`.
+  - Claims and sources can only be attached while the snapshot is in `'pending'` state.
+  - Upon research completion, the snapshot transitions to `'completed'`, `'failed'`, or `'partial'` with `completed_at` recorded.
+  - **Finalization Integrity:** A pending snapshot cannot be detached (`conversation_id = NULL`) or reassigned to a different conversation during finalization. Both RLS `with check` (which explicitly requires `conversation_id IS NOT NULL`) and the database trigger `enforce_snapshot_immutability` enforce that finalization retains a valid conversation reference while permitting the intended pending-to-finalized transition.
+- **Immutability of Finalized Evidence:**
+  - Once finalized, database triggers and RLS policies strictly forbid any updates to content, query, or metadata, as well as direct deletion of snapshots, claims, or sources by users.
+- **Referential Cleanup Semantics:**
+  - `trigger_message_id` uses `ON DELETE SET NULL`. Deleting a referenced message sets `trigger_message_id` to `NULL` without deleting or failing the snapshot.
+  - `conversation_id` uses `ON DELETE SET NULL`. Deleting a conversation sets `conversation_id` to `NULL` without deleting or failing the snapshot.
+  - The snapshot immutability trigger explicitly permits these cascading referential nullings while strictly rejecting any other column modifications or direct deletions.
+  - All captured research claims and sources remain intact and associated with the user profile, guaranteeing historical research preservation even if conversations are pruned.
+- **Account Deletion Semantics:**
+  - When an account is deleted via Supabase Auth (`DELETE FROM auth.users`), foreign key cascades propagate to `public.profiles` (`ON DELETE CASCADE`).
+  - When the owning profile row has been deleted, the snapshot and claims immutability triggers recognize that account deletion is occurring and permit the cascade to cleanly remove all associated snapshots, claims, and sources.
+  - If the owning profile still exists, direct deletions of finalized snapshots and claims remain completely blocked.
+- **Security Boundary Between RLS and Referential Actions:**
+  - PostgreSQL row-level triggers evaluate column transitions (`OLD` vs `NEW`) but cannot inspect the call stack to determine whether an update originated from an internal engine foreign-key cascade or direct SQL.
+  - Ordinary authenticated users are protected at the database boundary via Row Level Security (RLS). The `research_snapshots_update_lifecycle` policy strictly requires `status = 'pending'`, making it impossible for authenticated users to execute direct `UPDATE` statements on finalized snapshots.
+  - Privileged database-owner/service-role operations are restricted to server administration and are never exposed to client applications.
 
 ### 4. Safe Authentication Messaging & Timezone Sanitization
-- Raw Supabase errors are never leaked in URLs or rendered to users; safe generic error codes are displayed while diagnostics are logged on the server.
+- Raw Supabase errors and internal exceptions are never leaked in URLs or rendered to users; safe generic error codes are displayed while structured diagnostics are logged on the server using `logAuthDiagnostic()`.
+- Server diagnostics never log passwords, tokens, auth codes, or raw provider strings.
 - Submitted timezones are validated against official IANA identifiers with a fallback to `Asia/Kolkata`.
 - Route matching in `src/proxy.ts` uses boundary-aware path checking to prevent unintended prefix matches.
+
+## Database Verification Script
+
+To verify all schema triggers, ownership checks, snapshot immutability, referential cleanup cascades, authenticated-role RLS policies, and complete account-deletion cascades in your Supabase project, execute `supabase/verification.sql` in the **Supabase Dashboard SQL Editor** or via Supabase CLI (`supabase db query`).
+
+### Elevated Privileges & Safety
+- **Privileges:** The verification script requires administrative (`postgres` / `service_role`) privileges because it creates ephemeral test users in `auth.users` to satisfy foreign keys on `public.profiles` and tests role switching.
+- **Environment:** Run in the Supabase SQL Editor or a local development PostgreSQL instance. It is not intended for client-side execution.
+- **Safety:** The script runs within an atomic transaction that unconditionally ends with `ROLLBACK`. Zero test users, data, or credentials are persisted.
+
+The verification script executes 4 distinct testing phases:
+1. **Part 1: Snapshot Finalization & Immutability Integrity (Specific SQLSTATE & Message Assertions)**
+   - Rejection of snapshot finalization with `conversation_id = NULL` (asserts SQLSTATE `P0001` and exact message substring).
+   - Rejection of invalid snapshot lifecycle status transitions (asserts SQLSTATE `23514` check violation or `P0001`).
+   - Acceptance of normal snapshot finalization with valid conversation.
+   - Rejection of direct `UPDATE` on finalized snapshot content/query (asserts SQLSTATE `P0001`).
+   - Rejection of direct `DELETE` on finalized snapshot while profile exists (asserts SQLSTATE `P0001`).
+   - Rejection of `INSERT`, `UPDATE`, and `DELETE` on claims and sources belonging to a finalized snapshot (asserts SQLSTATE `P0001`).
+2. **Part 2: Referential Cleanup on Message & Conversation Deletion**
+   - Referential cleanup: deleting a referenced message sets `trigger_message_id = NULL` while snapshot remains.
+   - Referential cleanup: deleting a referenced conversation sets `conversation_id = NULL` while snapshot remains.
+   - Preservation of research evidence: snapshot, claims, and sources remain intact after conversation deletion.
+3. **Part 3: Authenticated-Role Row Level Security (RLS) Verification**
+   - Switches execution role to `authenticated` using Supabase JWT claim context (`request.jwt.claim.sub`).
+   - Verifies User A can read their own permitted records under RLS.
+   - Verifies User A cannot read User B's protected records (cross-tenant row filtering).
+   - Verifies User A cannot mutate (UPDATE or DELETE) User B's records (`row_count = 0`).
+   - Verifies User A cannot mutate their own finalized snapshots under RLS (`row_count = 0`).
+   - Restores role safely back to administrative context.
+4. **Part 4: Complete Account-Deletion Cascade from `auth.users`**
+   - Deletes test user from `auth.users`.
+   - Confirms complete cascade purges records across `profiles`, `conversations`, `messages`, `memory_items`, `research_snapshots`, `research_claims`, and `research_sources`.

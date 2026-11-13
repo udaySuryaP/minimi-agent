@@ -73,5 +73,19 @@ describe('getSafeRedirectUrl', () => {
       expect(getSafeRedirectUrl('/chat\r\nHeader: Injection')).toBe('/chat')
       expect(getSafeRedirectUrl('/chat\x08')).toBe('/chat')
     })
+
+    it('rejects malformed percent escapes and encoded traversal/tricks', () => {
+      expect(getSafeRedirectUrl('/%ZZ')).toBe('/chat')
+      expect(getSafeRedirectUrl('/%2')).toBe('/chat')
+      expect(getSafeRedirectUrl('/%')).toBe('/chat')
+      expect(getSafeRedirectUrl('/chat/%ZZ/details')).toBe('/chat')
+      expect(getSafeRedirectUrl('/%5Cevil.com')).toBe('/chat')
+      expect(getSafeRedirectUrl('/%00evil.com')).toBe('/chat')
+    })
+
+    it('preserves valid percent-encoded paths and query strings', () => {
+      expect(getSafeRedirectUrl('/test%20ok')).toBe('/test%20ok')
+      expect(getSafeRedirectUrl('/chat?q=hello%20world')).toBe('/chat?q=hello%20world')
+    })
   })
 })

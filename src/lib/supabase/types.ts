@@ -130,7 +130,7 @@ export type Database = {
         Row: {
           id: string
           user_id: string
-          conversation_id: string
+          conversation_id: string | null
           trigger_message_id: string | null
           query: string
           status: 'pending' | 'completed' | 'failed' | 'partial'
@@ -141,7 +141,7 @@ export type Database = {
         Insert: {
           id?: string
           user_id: string
-          conversation_id: string
+          conversation_id?: string | null
           trigger_message_id?: string | null
           query: string
           status?: 'pending' | 'completed' | 'failed' | 'partial'
@@ -152,7 +152,7 @@ export type Database = {
         Update: {
           id?: string
           user_id?: string
-          conversation_id?: string
+          conversation_id?: string | null
           trigger_message_id?: string | null
           query?: string
           status?: 'pending' | 'completed' | 'failed' | 'partial'

@@ -47,3 +47,25 @@ export function mapSupabaseErrorToCode(errorMessage: string, isSignUp = false): 
 
   return isSignUp ? 'signup_failed' : 'invalid_credentials'
 }
+
+export type AuthDiagnosticEvent = 'login_failure' | 'signup_failure' | 'callback_failure'
+
+export interface AuthDiagnosticPayload {
+  event: AuthDiagnosticEvent
+  code: string
+  status?: number
+}
+
+/**
+ * Logs structured authentication diagnostics on the server.
+ * Strips raw error messages, credentials, tokens, and provider messages.
+ * Only logs fixed event identifiers, safe mapped error codes, and HTTP status codes.
+ */
+export function logAuthDiagnostic(event: AuthDiagnosticEvent, code: string, status?: number): void {
+  const payload: AuthDiagnosticPayload = {
+    event,
+    code,
+    ...(status !== undefined ? { status } : {}),
+  }
+  console.error(`[auth:${event}]`, payload)
+}
