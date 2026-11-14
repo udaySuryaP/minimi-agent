@@ -228,7 +228,7 @@ export class GeminiHttpProvider implements GeminiProvider {
         return await this.generateJsonOnce(config, model, instruction, data, temperature, operation)
       } catch (error) {
         lastError = error
-        if (models.length === 1 || !(error instanceof ProviderRequestError)) throw error
+        if (models.length === 1) throw error
       }
     }
     throw lastError ?? new Error('Provider request failed.')
