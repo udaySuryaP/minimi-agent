@@ -50,9 +50,18 @@ Open `.env.local` and fill in your credentials:
 | `SUPABASE_SECRET_KEY` | Optional server-only secret key | Supabase Dashboard → Settings → API (service_role) |
 | `GEMINI_API_KEY` | Google AI Studio Key (Phase 2) | [Google AI Studio](https://aistudio.google.com/app/apikey) |
 | `TAVILY_API_KEY` | Tavily Search Key (Phase 2) | [Tavily Dashboard](https://app.tavily.com) |
+| `AGENT_MAX_REQUEST_BYTES` | Maximum `/api/agent` request body size in bytes (default `16384`; values above `1048576` use the default) | Optional server-only setting |
+| `AGENT_MAX_SEARCH_CALLS` | Per-turn Tavily call ceiling (default `8`; hard maximum `8`) | Optional server-only setting |
+| `AGENT_MAX_RESULTS_PER_CALL` | Tavily results requested per call (default `5`; hard maximum `5`) | Optional server-only setting |
+| `AGENT_SEARCH_CALL_TIMEOUT_MS` | Timeout for one Tavily call (default and hard maximum `8000`) | Optional server-only setting |
+| `AGENT_SEARCH_TOTAL_TIMEOUT_MS` | Total Tavily execution budget (default and hard maximum `30000`) | Optional server-only setting |
 | `NEXT_PUBLIC_APP_URL` | Base application URL | `http://localhost:3000` for local dev |
 
 > **Security Note:** Never commit `.env.local`. It is strictly excluded by `.gitignore`.
+
+The search plan carries an intended call budget, and the server-side executor independently enforces the configured per-turn and per-call limits. Limits can be lowered with the server-only environment variables above; values cannot raise the hard caps.
+
+Historical retrieval ranks at most 200 newest full-text matches per record type because the current schema exposes no database-side relevance score. A relevant record outside that candidate window may not be returned; adding a rank projection or RPC can be considered separately if observed data volume requires it.
 
 ### 3. Apply database migrations
 
