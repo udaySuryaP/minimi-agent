@@ -88,7 +88,7 @@ export const ExtractedResearchClaimSchema = z.object({
   priceType: z.enum(['standard', 'promotional', 'unknown']).default('unknown'), discountConditions: z.string().max(500).nullable().default(null),
   temporalStatus: z.enum(['historical', 'current', 'unknown']).default('unknown'), confidence: z.enum(['high', 'medium', 'low']),
   verification: z.enum(['supported', 'uncertain', 'unverified']).default('supported'), sourceIds: z.array(z.string().min(1).max(100)).min(1).max(4),
-})
+}).strict()
 export type ExtractedResearchClaim = z.infer<typeof ExtractedResearchClaimSchema>
 
 export const ComparisonOutcomeSchema = z.enum(['changed', 'unchanged', 'new_information', 'no_longer_verifiable', 'conflicting', 'insufficient_evidence'])

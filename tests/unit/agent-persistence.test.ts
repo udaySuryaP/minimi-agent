@@ -47,6 +47,12 @@ describe('snapshot persistence lifecycle', () => {
     expect(mock.invocation().args).toMatchObject({ p_conversation_id: conversationId, p_status: 'failed' })
   })
 
+  it('persists extraction exhaustion as partial even when search succeeded', async () => {
+    const mock = repositoryMock()
+    await mock.repository.persist({ ...input, status: 'partial', claims: [] })
+    expect(mock.invocation().args).toMatchObject({ p_status: 'partial', p_claims: [] })
+  })
+
   it('returns only the safe persistence error when the atomic RPC rejects', async () => {
     const mock = repositoryMock(new Error('private database detail'))
     await expect(mock.repository.persist(input)).rejects.toMatchObject({ name: 'ResearchPersistenceError', cleanupAttempted: false, cleanupSucceeded: true })

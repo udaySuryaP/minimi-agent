@@ -101,7 +101,7 @@ describe('Gemini grounded answer boundary', () => {
     }],
   }] })
 
-  it('uses OpenRouter chat completions and JSON mode when configured', async () => {
+  it('uses OpenRouter chat completions with required strict structured output when configured', async () => {
     vi.stubEnv('OPENROUTER_API_KEY', 'test-only-key')
     vi.stubEnv('OPENROUTER_MODEL', 'test/free-model')
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: JSON.stringify({ statements: [{ text: 'No supplied source establishes the release date.', kind: 'limitation', sourceIds: [] }] }) } }] }))
@@ -110,7 +110,12 @@ describe('Gemini grounded answer boundary', () => {
     expect(answer.text).toContain('Insufficient evidence:')
     expect(fetchMock.mock.calls[0][0]).toBe('https://openrouter.ai/api/v1/chat/completions')
     expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ authorization: 'Bearer test-only-key' })
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ model: 'test/free-model', response_format: { type: 'json_object' } })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      model: 'test/free-model',
+      response_format: { type: 'json_schema', json_schema: { name: 'minimi_answer', strict: true } },
+      provider: { require_parameters: true },
+    })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).response_format.json_schema.schema).toMatchObject({ type: 'object', required: ['statements'], additionalProperties: false })
   })
 
   it('verifies support using only the finding and cited source text, then maps trusted citation metadata', async () => {
@@ -120,6 +125,7 @@ describe('Gemini grounded answer boundary', () => {
     const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What launched?', history, sources: [source], claims: [], comparisons: [] })
     expect(answer.citations).toEqual([{ id: 'web-1', title: 'Facts', url: 'https://example.com/facts' }])
     expect(answer.text).toContain('[web-1]')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).generationConfig.responseJsonSchema).toMatchObject({ type: 'object', required: ['statements'], additionalProperties: false })
     expect(answer.claims[0].evidence).toEqual([{ sourceId: 'web-1', url: 'https://example.com/facts' }])
     const verifierInput = JSON.parse(fetchMock.mock.calls[1][1].body).contents[0].parts[0].text
     expect(verifierInput).toContain('Acme launched a new feature.')
@@ -281,5 +287,77 @@ describe('Gemini grounded answer boundary', () => {
     expect(parsedGenerationInput.history.researchSnapshots[0].claims[0]).toMatchObject({ claimText, provenance: 'previously_generated_claim', verificationStatus: 'supported' })
     expect(parsedGenerationInput.sources).toEqual([])
     expect(answer.text).toContain('Insufficient evidence:')
+  })
+})
+
+describe('OpenRouter claim extraction normalization and bounded recovery', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
+  const source = { id: 'web-1', kind: 'web' as const, url: 'https://example.com/facts', title: 'Facts', snippet: 'Acme launched offline mode on 2025-03-01.', domain: 'example.com', publishedAt: null, observedAt: '2026-11-13T12:00:00.000Z', score: 0.9, effectiveAt: null }
+  const claim = (overrides: Record<string, unknown> = {}) => ({ entityName: 'Acme', claimType: 'announcement', proposition: 'offline mode launch', claimText: 'Acme launched offline mode on 2025-03-01.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, priceType: 'unknown', discountConditions: null, effectiveAt: { precision: 'date', value: '2025-03-01' }, temporalStatus: 'historical', confidence: 'high', verification: 'supported', sourceIds: ['web-1'], ...overrides })
+  const completion = (content: unknown) => Response.json({ choices: [{ message: { content } }] })
+  const verified = () => completion(JSON.stringify({ verifications: [{ index: 0, status: 'supported' }] }))
+  function configure() { vi.stubEnv('OPENROUTER_API_KEY', 'test-only-key'); vi.stubEnv('OPENROUTER_MODEL', 'test/primary'); vi.stubEnv('OPENROUTER_FALLBACK_MODEL', 'test/fallback') }
+
+  it('accepts a valid primary response and a single direct claim object without trusting model verification', async () => {
+    configure()
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion(JSON.stringify(claim()))).mockResolvedValueOnce(verified())
+    vi.stubGlobal('fetch', fetchMock)
+    const claims = await new OpenRouterHttpProvider().extractClaims('What launched?', [source])
+    expect(claims).toHaveLength(1)
+    expect(claims[0].verification).toBe('supported')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('accepts the provider envelope with JSON text content blocks', async () => {
+    configure()
+    const json = JSON.stringify({ claims: [claim()] })
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion([{ type: 'text', text: json.slice(0, 40) }, { type: 'text', text: json.slice(40) }])).mockResolvedValueOnce(verified())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await new OpenRouterHttpProvider().extractClaims('What launched?', [source])).toHaveLength(1)
+  })
+
+  it.each([
+    ['claimType', { claimType: 'product_update' }], ['claimValue', { claimValue: { amount: 10 } }], ['verification', { verification: 'verified' }],
+    ['wrong top-level structure', { result: { claims: [claim()] } }], ['missing required fields', { claims: [{ entityName: 'Acme' }] }],
+    ['unexpected extra fields', { claims: [claim({ hidden: true })] }], ['empty output', ''],
+  ])('repairs once then uses fallback for %s mismatch', async (_label, invalid) => {
+    configure()
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion(JSON.stringify(invalid))).mockResolvedValueOnce(completion(JSON.stringify({ claims: [claim()] }))).mockResolvedValueOnce(verified())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await new OpenRouterHttpProvider().extractClaims('What launched?', [source])).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).model).toBe('test/primary')
+  })
+
+  it('allows the configured fallback after the primary repair fails schema validation', async () => {
+    configure()
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion(JSON.stringify({ claims: [claim({ confidence: 'supported' })] }))).mockResolvedValueOnce(completion(JSON.stringify({ claims: [claim({ temporalStatus: null })] }))).mockResolvedValueOnce(completion(JSON.stringify({ claims: [claim()] }))).mockResolvedValueOnce(verified())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await new OpenRouterHttpProvider().extractClaims('What launched?', [source])).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).model).toBe('test/fallback')
+  })
+
+  it('fails in a bounded way when repair and fallback both fail', async () => {
+    configure()
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion('{broken')).mockResolvedValueOnce(completion('{still broken')).mockResolvedValueOnce(completion(JSON.stringify({ claims: [{ entityName: 'Acme' }] })))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(new OpenRouterHttpProvider().extractClaims('What launched?', [source])).rejects.toMatchObject({ kind: 'request_failed' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('times out, repairs once, then uses the fallback with finite calls', async () => {
+    configure()
+    const fetchMock = vi.fn().mockRejectedValueOnce(new DOMException('private', 'TimeoutError')).mockResolvedValueOnce(completion('{bad')).mockResolvedValueOnce(completion(JSON.stringify({ claims: [claim()] }))).mockResolvedValueOnce(verified())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await new OpenRouterHttpProvider().extractClaims('What launched?', [source])).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('omits unsupported evidence even when its claim JSON is valid', async () => {
+    configure()
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion(JSON.stringify({ claims: [claim()] }))).mockResolvedValueOnce(completion(JSON.stringify({ verifications: [{ index: 0, status: 'insufficient' }] })))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await new OpenRouterHttpProvider().extractClaims('What launched?', [source])).toEqual([])
   })
 })

@@ -1,19 +1,10 @@
 'use client'
 
 import { FormEvent, useRef, useState } from 'react'
+import { assistantText, citationLabel, parseChatResponse, safeCitationUrl, type ChatMessage } from '@/lib/agent/chat-response'
+import type { AgentExecution } from '@/lib/agent/contracts'
 
-type Citation = { id: string; title: string; url: string }
-type AgentResult = {
-  status: 'needs_clarification' | 'no_search' | 'completed' | 'partial' | 'failed'
-  answer: { text: string; citations: Citation[] } | null
-  snapshotId: string | null
-  conversationId: string | null
-  error: { message: string } | null
-  searchExecution: { attemptedCalls: number; completedCalls: number } | null
-}
-type Message = { role: 'user' | 'assistant'; text: string; result?: AgentResult }
-
-const statusLabel: Record<AgentResult['status'], string> = {
+const statusLabel: Record<AgentExecution['status'], string> = {
   needs_clarification: 'Needs a little more detail',
   no_search: 'Answered from your saved context',
   completed: 'Research complete',
@@ -22,7 +13,7 @@ const statusLabel: Record<AgentResult['status'], string> = {
 }
 
 export default function ChatClient({ email }: { email: string | null }) {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [query, setQuery] = useState('')
   const [conversationId, setConversationId] = useState<string | undefined>()
   const [loading, setLoading] = useState(false)
@@ -41,12 +32,11 @@ export default function ChatClient({ email }: { email: string | null }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ query: trimmed, ...(conversationId ? { conversationId } : {}) }),
       })
-      const payload = await response.json() as AgentResult | { error?: { message?: string } }
-      if (!response.ok || !('status' in payload)) {
-        throw new Error(('error' in payload && payload.error?.message) || 'Minimi could not complete that request.')
-      }
-      setConversationId(payload.conversationId ?? conversationId)
-      setMessages((current) => [...current, { role: 'assistant', text: payload.answer?.text || payload.error?.message || 'I could not produce a source-backed answer.', result: payload }])
+      const payload: unknown = await response.json()
+      const result = parseChatResponse(payload)
+      if (!result) throw new Error('Minimi could not complete that request.')
+      setConversationId(result.conversationId ?? conversationId)
+      setMessages((current) => [...current, { role: 'assistant', text: assistantText(result), result }])
     } catch (error) {
       setMessages((current) => [...current, { role: 'assistant', text: error instanceof Error ? error.message : 'Minimi could not complete that request.' }])
     } finally {
@@ -89,7 +79,8 @@ export default function ChatClient({ email }: { email: string | null }) {
             {message.result && <div className="mt-4 border-t border-current/10 pt-3 text-xs text-zinc-500">
               <p className="font-medium">{statusLabel[message.result.status]}</p>
               {message.result.searchExecution && <p className="mt-1">{message.result.searchExecution.completedCalls} of {message.result.searchExecution.attemptedCalls} source searches returned evidence.</p>}
-              {message.result.answer?.citations.length ? <div className="mt-3 flex flex-wrap gap-2">{message.result.answer.citations.map((citation) => <a key={citation.id} href={citation.url} target="_blank" rel="noreferrer" className="rounded-full bg-zinc-100 px-3 py-1.5 text-zinc-700 underline decoration-zinc-300 underline-offset-2 hover:text-indigo-600 dark:bg-zinc-800 dark:text-zinc-300">{citation.title}</a>)}</div> : null}
+              {message.result.error && message.result.status !== 'failed' && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">Limitation: {message.result.error.message}</p>}
+              {message.result.answer?.citations.length ? <div className="mt-3 flex flex-wrap gap-2" aria-label="Sources">{message.result.answer.citations.map((citation) => { const url = safeCitationUrl(citation.url); return url ? <a key={citation.id} href={url} target="_blank" rel="noreferrer" className="rounded-full bg-zinc-100 px-3 py-1.5 text-zinc-700 underline decoration-zinc-300 underline-offset-2 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:bg-zinc-800 dark:text-zinc-300" title={citation.title}>{citationLabel(citation)} · {citation.title}</a> : null })}</div> : null}
             </div>}
           </article>
         ))}

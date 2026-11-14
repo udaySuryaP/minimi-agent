@@ -56,9 +56,9 @@ export async function executeAgent(query: AgentQuery, executionContext: Executio
     const search = await executeSearchPlan(searchPlan, dependencies.tavily, searchLimits)
     const successes = search.execution.outcomes.filter((outcome) => outcome.status === 'succeeded').length
     const failures = search.execution.outcomes.filter((outcome) => outcome.status === 'failed').length
-    const persist = async (claims: Parameters<ResearchPersistenceRepository['persist']>[0]['claims'], comparisons: Parameters<ResearchPersistenceRepository['persist']>[0]['comparisons'], evidenceSources: Parameters<ResearchPersistenceRepository['persist']>[0]['evidenceSources']) => {
+    const persist = async (claims: Parameters<ResearchPersistenceRepository['persist']>[0]['claims'], comparisons: Parameters<ResearchPersistenceRepository['persist']>[0]['comparisons'], evidenceSources: Parameters<ResearchPersistenceRepository['persist']>[0]['evidenceSources'], status?: 'completed' | 'failed' | 'partial') => {
       try {
-        return await dependencies.persistence!.persist({ userId: context.userId, conversationId: query.conversationId, query: query.query, observedAt, searchExecution: search.execution, evidenceSources, claims, comparisons })
+        return await dependencies.persistence!.persist({ userId: context.userId, conversationId: query.conversationId, query: query.query, observedAt, searchExecution: search.execution, evidenceSources, claims, comparisons, status })
       } catch (error) {
         persistenceFailed = true
         if (error instanceof Error && 'cleanupAttempted' in error && typeof error.cleanupAttempted === 'boolean') persistenceCleanupAttempted = error.cleanupAttempted
@@ -78,7 +78,7 @@ export async function executeAgent(query: AgentQuery, executionContext: Executio
     try {
       extractedClaims = webSources.length ? await dependencies.reasoner.extractClaims(query.query, webSources) : []
     } catch {
-      const persisted = await persist([], [], evidenceSources)
+      const persisted = await persist([], [], evidenceSources, 'partial')
       return AgentExecutionSchema.parse({ status: 'partial', ...base, evidenceSources, extractedClaims: [], comparisons: [], snapshotId: persisted?.snapshotId ?? null, conversationId: persisted?.conversationId ?? null, answer: null, error: errorValue(persistenceFailed ? 'PERSISTENCE_ERROR' : 'PROVIDER_ERROR', persistenceFailed ? 'Search evidence was found but could not be saved.' : 'Search evidence was found, but claim extraction did not complete.', { cleanupAttempted: persistenceCleanupAttempted, cleanupSucceeded: persistenceCleanupSucceeded }) })
     }
     const comparisons = intent.intent === 'historical_current_comparison' ? compareHistoricalAndCurrent(history, extractedClaims) : []
@@ -86,10 +86,10 @@ export async function executeAgent(query: AgentQuery, executionContext: Executio
     try {
       answer = await dependencies.reasoner.generateAnswer({ query: query.query, history, sources: evidenceSources, claims: extractedClaims, comparisons })
     } catch {
-      const persisted = await persist(extractedClaims, comparisons, evidenceSources)
+      const persisted = await persist(extractedClaims, comparisons, evidenceSources, 'partial')
       return AgentExecutionSchema.parse({ status: 'partial', ...base, evidenceSources, extractedClaims, comparisons, snapshotId: persisted?.snapshotId ?? null, conversationId: persisted?.conversationId ?? null, answer: null, error: errorValue(persistenceFailed ? 'PERSISTENCE_ERROR' : 'PROVIDER_ERROR', persistenceFailed ? 'Research findings were generated but could not be saved.' : 'Research findings were generated, but answer generation did not complete.', { cleanupAttempted: persistenceCleanupAttempted, cleanupSucceeded: persistenceCleanupSucceeded }) })
     }
-    const persisted = await persist(extractedClaims, comparisons, evidenceSources)
+    const persisted = await persist(extractedClaims, comparisons, evidenceSources, failures > 0 ? 'partial' : 'completed')
     const state = persistenceFailed || failures > 0 ? 'partial' : 'completed'
     return AgentExecutionSchema.parse({ status: state, ...base, evidenceSources, extractedClaims, comparisons, snapshotId: persisted?.snapshotId ?? null, conversationId: persisted?.conversationId ?? null, answer,
       error: persistenceFailed ? errorValue('PERSISTENCE_ERROR', 'Research results were generated but could not be saved.', { cleanupAttempted: persistenceCleanupAttempted, cleanupSucceeded: persistenceCleanupSucceeded }) : failures > 0 ? errorValue('PROVIDER_ERROR', 'Some planned web searches failed; this answer may be incomplete.') : null })

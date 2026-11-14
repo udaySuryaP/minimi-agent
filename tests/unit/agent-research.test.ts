@@ -273,6 +273,15 @@ describe('full research orchestration', () => {
     expect(mock.persistence.persist).toHaveBeenCalledOnce()
   })
 
+  it('marks the persisted snapshot partial when claim extraction is exhausted', async () => {
+    const mock = dependencies()
+    vi.mocked(mock.reasoner.extractClaims).mockRejectedValue(new Error('private provider detail'))
+    const output = await executeAgent({ query: 'latest Acme news' }, context, mock.deps)
+    expect(output.status).toBe('partial')
+    expect(mock.persistence.persist).toHaveBeenCalledWith(expect.objectContaining({ claims: [], status: 'partial' }))
+    expect(JSON.stringify(output)).not.toContain('private provider detail')
+  })
+
   it('does not call retrieval or providers when temporal clarification is required', async () => {
     const mock = dependencies()
     const output = await executeAgent({ query: 'What happened Wednesday?' }, { ...context, referenceTimestamp: '2026-11-11T12:00:00.000Z' }, mock.deps)

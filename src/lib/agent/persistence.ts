@@ -10,11 +10,9 @@ export class ResearchPersistenceError extends Error {
 export interface ResearchPersistenceRepository {
   persist(input: {
     userId: string; conversationId?: string; query: string; observedAt: string; searchExecution: SearchExecution;
-    evidenceSources: EvidenceSource[]; claims: ExtractedResearchClaim[]; comparisons: ClaimComparisonResult[]
+    evidenceSources: EvidenceSource[]; claims: ExtractedResearchClaim[]; comparisons: ClaimComparisonResult[]; status?: 'completed' | 'failed' | 'partial'
   }): Promise<{ snapshotId: string; conversationId: string }>
 }
-
-type SingleRow = { data: { id: string; created_at?: string } | null; error: unknown }
 
 export class SupabaseResearchPersistenceRepository implements ResearchPersistenceRepository {
   constructor(private readonly supabase: SupabaseClient<Database>) {}
@@ -55,7 +53,7 @@ export class SupabaseResearchPersistenceRepository implements ResearchPersistenc
       })) satisfies Json
       const failedCalls = input.searchExecution.outcomes.some((outcome) => outcome.status === 'failed')
       const successfulCalls = input.searchExecution.outcomes.some((outcome) => outcome.status === 'succeeded')
-      const status = input.searchExecution.attemptedCalls === 0 || !successfulCalls ? 'failed' : failedCalls ? 'partial' : 'completed'
+      const status = input.status ?? (input.searchExecution.attemptedCalls === 0 || !successfulCalls ? 'failed' : failedCalls ? 'partial' : 'completed')
       const persisted = await client.rpc('persist_research_snapshot', {
         p_conversation_id: input.conversationId ?? null,
         p_query: input.query,
