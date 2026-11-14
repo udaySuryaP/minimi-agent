@@ -233,7 +233,23 @@ export type Database = {
       }
     }
     Views: Record<string, never>
-    Functions: Record<string, never>
+    Functions: {
+      persist_research_snapshot: {
+        Args: {
+          p_conversation_id: string | null
+          p_query: string
+          p_search_params: Json
+          p_claims: Json
+          p_status: string
+          p_completed_at: string
+        }
+        Returns: { snapshot_id: string; conversation_id: string }[]
+      }
+      search_historical: {
+        Args: { p_query: string; p_conversation_id?: string | null; p_limit?: number }
+        Returns: { kind: string; id: string; rank: number }[]
+      }
+    }
     Enums: Record<string, never>
   }
 }

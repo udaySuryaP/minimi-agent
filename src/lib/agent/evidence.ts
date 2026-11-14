@@ -1,4 +1,4 @@
-import { EvidenceSourceSchema, type EvidenceSource, type HistoricalRetrieval, type PublishedDate, type ResearchClaim, type WebSearchResult } from './contracts'
+import { EvidenceSourceSchema, PublishedDateSchema, type EvidenceSource, type HistoricalRetrieval, type PublishedDate, type ResearchClaim, type WebSearchResult } from './contracts'
 
 function instantDate(value: string | null): PublishedDate | null {
   return value ? { precision: 'instant', value } : null
@@ -27,12 +27,13 @@ export function buildHistoricalEvidence(history: HistoricalRetrieval): EvidenceS
   for (const memory of history.memoryItems) sources.push(EvidenceSourceSchema.parse({ id: `history-memory:${memory.id}`, kind: 'historical_memory', url: null, title: memory.entityName, snippet: memory.content.slice(0, 4_000), domain: null, publishedAt: null, observedAt: memory.createdAt, score: null, effectiveAt: instantDate(memory.validFrom) }))
   for (const snapshot of history.researchSnapshots) {
     for (const claim of snapshot.claims) {
-      if (claim.sources.length === 0) sources.push(EvidenceSourceSchema.parse({ id: `history-claim:${claim.id}`, kind: 'historical_research', url: null, title: claim.entityName, snippet: claim.claimText.slice(0, 4_000), domain: null, publishedAt: null, observedAt: claim.recordedAt, score: null, effectiveAt: instantDate(claim.validAt) }))
+      const effectiveDate = PublishedDateSchema.safeParse(claim.structuredData.effectiveDate)
+      const effectiveAt = effectiveDate.success ? effectiveDate.data : instantDate(claim.validAt)
       for (const source of claim.sources) sources.push(EvidenceSourceSchema.parse({
         id: `history-source:${source.id}`, kind: 'historical_research', url: source.url, title: source.title,
-        snippet: `${claim.claimText}\n${source.snippet ?? ''}`.slice(0, 4_000), domain: new URL(source.url).hostname,
-        publishedAt: source.publishedAt ? { precision: 'instant', value: source.publishedAt } : null, observedAt: source.retrievedAt,
-        score: source.score, effectiveAt: instantDate(claim.validAt),
+        snippet: source.snippet ?? '', domain: new URL(source.url).hostname,
+        publishedAt: source.publishedAt, observedAt: source.retrievedAt,
+        score: source.score, effectiveAt,
       }))
     }
   }

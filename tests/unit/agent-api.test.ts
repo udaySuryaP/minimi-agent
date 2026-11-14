@@ -77,8 +77,8 @@ describe('agent API request boundary', () => {
     const request = validRequest(JSON.stringify({ query: 'hello' }))
     expect(request.headers.get('content-length')).toBeNull()
     const response = await POST(request)
-    expect(response.status).toBe(200)
-    expect(await json(response)).toMatchObject({ status: 'planned' })
+    expect(response.status).toBe(503)
+    expect(await json(response)).toMatchObject({ status: 'failed', error: { code: 'PROVIDER_ERROR' } })
   })
 
   it('ignores a malformed Content-Length hint and still enforces the stream limit', async () => {
@@ -124,7 +124,7 @@ describe('agent API request boundary', () => {
     const response = await POST(validRequest(JSON.stringify({ query: 'today', referenceTimestamp: '1900-01-01T00:00:00.000Z' })))
     const result = await json(response) as { temporal: { referenceTimestamp: string } }
     const actual = new Date(result.temporal.referenceTimestamp).getTime()
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(503)
     expect(actual).toBeGreaterThanOrEqual(before)
     expect(actual).toBeLessThanOrEqual(Date.now())
     expect(result.temporal.referenceTimestamp).not.toBe('1900-01-01T00:00:00.000Z')

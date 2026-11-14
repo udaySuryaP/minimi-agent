@@ -1,4 +1,5 @@
 import { IntentResultSchema, type Intent, type IntentResult } from './contracts'
+import { ProviderRequestError } from './provider-errors'
 
 export interface IntentClassifier { classify(query: string): Promise<IntentResult> }
 
@@ -13,5 +14,11 @@ export function classifyIntentDeterministically(query: string): IntentResult {
 }
 
 export async function classifyIntent(query: string, classifier?: IntentClassifier): Promise<IntentResult> {
-  return classifier ? IntentResultSchema.parse(await classifier.classify(query)) : classifyIntentDeterministically(query)
+  if (!classifier) return classifyIntentDeterministically(query)
+  try {
+    return IntentResultSchema.parse(await classifier.classify(query))
+  } catch (error) {
+    if (error instanceof ProviderRequestError) throw error
+    throw new ProviderRequestError('request_failed')
+  }
 }

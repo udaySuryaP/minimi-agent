@@ -3,7 +3,8 @@ import { parseRetryAfter, ProviderRequestError } from '@/lib/agent/provider-erro
 
 vi.mock('server-only', () => ({}))
 
-import { GeminiHttpProvider, normalizePublishedDate, TavilyHttpProvider } from '@/lib/agent/providers'
+import { GeminiHttpProvider, normalizePublishedDate, OpenRouterHttpProvider, TavilyHttpProvider } from '@/lib/agent/providers'
+import { buildHistoricalEvidence } from '@/lib/agent/evidence'
 
 describe('Tavily publication date normalization', () => {
   it('preserves date-only precision and normalizes offset timestamps to UTC', () => {
@@ -87,24 +88,59 @@ describe('Gemini grounded answer boundary', () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
   const source = { id: 'web-1', kind: 'web' as const, url: 'https://example.com/facts', title: 'Facts', snippet: 'Acme launched a new feature.', domain: 'example.com', publishedAt: null, observedAt: '2026-11-13T12:00:00.000Z', score: 0.9, effectiveAt: null }
+  const secondSource = { ...source, id: 'web-2', url: 'https://example.com/second', title: 'Second', snippet: 'A second source confirms the feature launch.' }
   const history = { messages: [], memoryItems: [], researchSnapshots: [] }
+  const envelope = (value: unknown) => Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(value) }] } }] })
+  const finding = (text = 'Acme launched a new feature.', sourceIds = ['web-1']) => ({ statements: [{ text, kind: 'finding', sourceIds }] })
+  const verification = (status: 'supported' | 'insufficient' | 'conflicting' = 'supported', index = 0) => ({ verifications: [{ index, status }] })
+  const savedHistory = (claimText: string, snippet: string | null) => ({ messages: [], memoryItems: [], researchSnapshots: [{
+    id: '8d1e4570-f5e5-4e55-a8f7-65791122a2fb', query: 'Acme research', status: 'completed' as const, createdAt: '2025-01-01T00:00:00.000Z', claims: [{
+      id: 'b879e41c-5110-485f-a9be-7cd85a2b8ad9', snapshotId: '8d1e4570-f5e5-4e55-a8f7-65791122a2fb', entityName: 'Acme', claimType: 'feature' as const,
+      claimText, claimValue: null, structuredData: { verification: 'supported' }, verificationStatus: 'supported' as const, provenance: 'previously_generated_claim' as const,
+      validAt: null, recordedAt: '2025-01-01T00:00:00.000Z', sources: snippet === null ? [] : [{ id: '7900b6fb-fb42-4138-9f49-aa304f9482ef', url: 'https://example.com/source', title: 'Original source', snippet, domain: 'example.com', score: 0.9, publishedAt: null, retrievedAt: '2025-01-01T00:00:00.000Z' }],
+    }],
+  }] })
 
-  it('maps validated source IDs back to trusted citation metadata', async () => {
+  it('uses OpenRouter chat completions and JSON mode when configured', async () => {
+    vi.stubEnv('OPENROUTER_API_KEY', 'test-only-key')
+    vi.stubEnv('OPENROUTER_MODEL', 'test/free-model')
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: JSON.stringify({ statements: [{ text: 'No supplied source establishes the release date.', kind: 'limitation', sourceIds: [] }] }) } }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new OpenRouterHttpProvider().generateAnswer({ query: 'When was it released?', history, sources: [], claims: [], comparisons: [] })
+    expect(answer.text).toContain('Insufficient evidence:')
+    expect(fetchMock.mock.calls[0][0]).toBe('https://openrouter.ai/api/v1/chat/completions')
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ authorization: 'Bearer test-only-key' })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ model: 'test/free-model', response_format: { type: 'json_object' } })
+  })
+
+  it('verifies support using only the finding and cited source text, then maps trusted citation metadata', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({ statements: [{ text: 'Acme launched a feature.', kind: 'finding', sourceIds: ['web-1'] }] }) }] } }] }))
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(finding())).mockResolvedValueOnce(envelope(verification()))
     vi.stubGlobal('fetch', fetchMock)
     const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What launched?', history, sources: [source], claims: [], comparisons: [] })
     expect(answer.citations).toEqual([{ id: 'web-1', title: 'Facts', url: 'https://example.com/facts' }])
     expect(answer.text).toContain('[web-1]')
-    const sent = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(sent.contents[0].parts[0].text).toContain('What launched?')
+    expect(answer.claims[0].evidence).toEqual([{ sourceId: 'web-1', url: 'https://example.com/facts' }])
+    const verifierInput = JSON.parse(fetchMock.mock.calls[1][1].body).contents[0].parts[0].text
+    expect(verifierInput).toContain('Acme launched a new feature.')
+    expect(verifierInput).toContain(source.snippet)
+    expect(verifierInput).not.toContain('What launched?')
+    expect(verifierInput).not.toContain('history')
   })
 
-  it('rejects uncited factual statements and fabricated source IDs', async () => {
+  it('downgrades unsupported and partially supported claims to explicit insufficient evidence', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({ statements: [{ text: 'Acme launched it.', kind: 'finding', sourceIds: [] }] }) }] } }] }))
-      .mockResolvedValueOnce(Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({ statements: [{ text: 'Acme launched it.', kind: 'finding', sourceIds: ['fake-source'] }] }) }] } }] }))
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(finding('Acme acquired Example Corp.', ['web-1']))).mockResolvedValueOnce(envelope(verification('insufficient')))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What happened?', history, sources: [source], claims: [], comparisons: [] })
+    expect(answer.text).toContain('Insufficient evidence to verify: Acme acquired Example Corp.')
+    expect(answer.claims).toEqual([])
+    expect(answer.citations).toEqual([{ id: 'web-1', title: 'Facts', url: source.url }])
+  })
+
+  it('rejects unknown source IDs and factual findings with no citations before verification', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(finding('Acme launched it.', ['made-up']))).mockResolvedValueOnce(envelope(finding('Acme launched it.', [])))
     vi.stubGlobal('fetch', fetchMock)
     const provider = new GeminiHttpProvider()
     const input = { query: 'What launched?', history, sources: [source], claims: [], comparisons: [] }
@@ -113,10 +149,137 @@ describe('Gemini grounded answer boundary', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('rejects claims that cite sources outside the supplied evidence set', async () => {
+  it('keeps attribution from multiple supporting sources', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({ claims: [{ entityName: 'Acme', claimType: 'feature', claimText: 'A new feature.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, effectiveAt: null, confidence: 'high', verification: 'supported', sourceIds: ['fabricated'] }] }) }] } }] }))
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(finding('Acme launched a feature.', ['web-1', 'web-2']))).mockResolvedValueOnce(envelope(verification()))
     vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What launched?', history, sources: [source, secondSource], claims: [], comparisons: [] })
+    expect(answer.citations.map(({ id }) => id)).toEqual(['web-1', 'web-2'])
+    expect(answer.claims[0].evidence.map(({ sourceId }) => sourceId)).toEqual(['web-1', 'web-2'])
+  })
+
+  it('labels model limitations as insufficient rather than presenting them as verified facts', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const fetchMock = vi.fn().mockResolvedValue(envelope({ statements: [{ text: 'The supplied records do not establish the release date.', kind: 'limitation', sourceIds: [] }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'When was it released?', history, sources: [], claims: [], comparisons: [] })
+    expect(answer.text).toBe('Insufficient evidence: The supplied records do not establish the release date.')
+    expect(answer.claims).toEqual([])
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('renders verifier conflicts and fails closed for malformed or failed verifier responses', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const conflictFetch = vi.fn().mockResolvedValueOnce(envelope(finding())).mockResolvedValueOnce(envelope(verification('conflicting')))
+    vi.stubGlobal('fetch', conflictFetch)
+    const input = { query: 'What launched?', history, sources: [source], claims: [], comparisons: [] }
+    const answer = await new GeminiHttpProvider().generateAnswer(input)
+    expect(answer.text).toContain('Conflicting evidence:')
+    expect(answer.claims).toEqual([])
+
+    const malformedFetch = vi.fn().mockResolvedValueOnce(envelope(finding())).mockResolvedValueOnce(envelope({ verifications: [{ index: 0, status: 'supported', quote: 'Fabricated quote.' }] }))
+    vi.stubGlobal('fetch', malformedFetch)
+    await expect(new GeminiHttpProvider().generateAnswer(input)).rejects.toMatchObject({ kind: 'request_failed' })
+
+    const failureFetch = vi.fn().mockResolvedValueOnce(envelope(finding())).mockResolvedValueOnce(new Response('', { status: 503 }))
+    vi.stubGlobal('fetch', failureFetch)
+    await expect(new GeminiHttpProvider().generateAnswer(input)).rejects.toMatchObject({ kind: 'request_failed' })
+  })
+
+  it('preserves temporal statuses, keeps old publications from being labeled current, and separates effective time', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const oldSource = { ...source, publishedAt: { precision: 'date' as const, value: '2020-01-01' } }
+    const outputClaims = { claims: [
+      { entityName: 'Acme', claimType: 'feature', proposition: 'offline mode', claimText: 'Feature was launched in 2020.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, priceType: 'unknown', discountConditions: null, effectiveAt: null, temporalStatus: 'current', confidence: 'high', verification: 'supported', sourceIds: ['web-1'] },
+      { entityName: 'Acme', claimType: 'announcement', proposition: 'feature update', claimText: 'Feature update announced.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, priceType: 'unknown', discountConditions: null, effectiveAt: { precision: 'date', value: '2020-02-01' }, temporalStatus: 'historical', confidence: 'high', verification: 'supported', sourceIds: ['web-1'] },
+      { entityName: 'Acme', claimType: 'general', proposition: null, claimText: 'Validity cannot be determined.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, priceType: 'unknown', discountConditions: null, effectiveAt: null, temporalStatus: 'unknown', confidence: 'low', verification: 'uncertain', sourceIds: ['web-1'] },
+    ] }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(envelope(outputClaims)).mockResolvedValueOnce(envelope({ verifications: [0, 1, 2].map((index) => ({ index, status: 'supported' })) })))
+    const claims = await new GeminiHttpProvider().extractClaims('What changed?', [oldSource])
+    expect(claims.map(({ temporalStatus }) => temporalStatus)).toEqual(['unknown', 'historical', 'unknown'])
+    expect(claims[1].effectiveAt).toEqual({ precision: 'date', value: '2020-02-01' })
+    expect(claims[0].effectiveAt).toBeNull()
+  })
+
+  it('preserves recent-source temporal uncertainty rather than inferring current validity', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const recentSource = { ...source, publishedAt: { precision: 'date' as const, value: '2026-11-13' } }
+    const baseClaim = { entityName: 'Acme', claimType: 'feature', proposition: 'offline mode', claimText: 'Acme currently supports offline mode.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, priceType: 'unknown', discountConditions: null, effectiveAt: null, confidence: 'medium', verification: 'uncertain', sourceIds: ['web-1'] }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(envelope({ claims: [
+      { ...baseClaim, temporalStatus: 'current' },
+      { ...baseClaim, proposition: 'sync mode', claimText: 'Acme currently supports sync mode.', temporalStatus: 'current' },
+      { ...baseClaim, temporalStatus: 'historical' },
+      { ...baseClaim, proposition: 'pricing availability', claimType: 'pricing', temporalStatus: 'unknown' },
+    ] })).mockResolvedValueOnce(envelope({ verifications: [0, 1, 2, 3].map((index) => ({ index, status: 'supported' })) })))
+    const claims = await new GeminiHttpProvider().extractClaims('Does Acme currently support offline mode?', [recentSource])
+    expect(claims.map(({ temporalStatus }) => temporalStatus)).toEqual(['unknown', 'current', 'unknown', 'unknown'])
+    expect(claims[0].effectiveAt).toBeNull()
+  })
+
+  it('omits extracted claims that fail support review and fails closed when the claim verifier fails', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const claim = { entityName: 'Acme', claimType: 'feature', proposition: 'offline mode', claimText: 'Acme acquired another company.', claimValue: null, currency: null, billingPeriod: null, region: null, planOrVersion: null, priceType: 'unknown', discountConditions: null, effectiveAt: null, temporalStatus: 'unknown', confidence: 'high', verification: 'supported', sourceIds: ['web-1'] }
+    const unsupportedFetch = vi.fn().mockResolvedValueOnce(envelope({ claims: [claim] })).mockResolvedValueOnce(envelope({ verifications: [{ index: 0, status: 'insufficient' }] }))
+    vi.stubGlobal('fetch', unsupportedFetch)
+    expect(await new GeminiHttpProvider().extractClaims('What changed?', [source])).toEqual([])
+
+    const failedFetch = vi.fn().mockResolvedValueOnce(envelope({ claims: [claim] })).mockResolvedValueOnce(new Response('', { status: 503 }))
+    vi.stubGlobal('fetch', failedFetch)
     await expect(new GeminiHttpProvider().extractClaims('What changed?', [source])).rejects.toMatchObject({ kind: 'request_failed' })
+  })
+
+  it('does not let an empty persisted source snippet verify the saved claim that cites it', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const claimText = 'Acme launched feature X.'
+    const history = savedHistory(claimText, '')
+    const sources = buildHistoricalEvidence(history)
+    const fetchMock = vi.fn().mockResolvedValue(envelope(finding(claimText, ['history-source:7900b6fb-fb42-4138-9f49-aa304f9482ef'])))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What did Acme launch?', history, sources, claims: [], comparisons: [] })
+    expect(answer.text).toContain('Insufficient evidence to verify:')
+    expect(answer.claims).toEqual([])
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('checks the original unrelated source content rather than the saved claim text', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const claimText = 'Acme increased prices.'
+    const originalSnippet = 'The source discusses office locations and hiring plans. '.repeat(20)
+    const history = savedHistory(claimText, originalSnippet)
+    const sources = buildHistoricalEvidence(history)
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(finding(claimText, ['history-source:7900b6fb-fb42-4138-9f49-aa304f9482ef']))).mockResolvedValueOnce(envelope(verification('insufficient')))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'Did prices increase?', history, sources, claims: [], comparisons: [] })
+    const parsedVerifierInput = JSON.parse(JSON.parse(fetchMock.mock.calls[1][1].body).contents[0].parts[0].text)
+    expect(parsedVerifierInput[0].claim).toBe(claimText)
+    expect(parsedVerifierInput[0].sources[0].content).toBe(originalSnippet)
+    expect(parsedVerifierInput[0].sources[0].content).not.toContain(claimText)
+    expect(answer.text).toContain('Insufficient evidence to verify:')
+  })
+
+  it('can verify a finding against genuinely supporting original source content', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const history = savedHistory('Acme launched feature X.', 'Acme announced the launch of feature X in January.')
+    const sources = buildHistoricalEvidence(history)
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(finding('Acme launched feature X.', ['history-source:7900b6fb-fb42-4138-9f49-aa304f9482ef']))).mockResolvedValueOnce(envelope(verification('supported')))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What did Acme launch?', history, sources, claims: [], comparisons: [] })
+    expect(answer.text).toContain('Acme launched feature X.')
+    expect(answer.claims).toHaveLength(1)
+  })
+
+  it('keeps generated historical claims as separate contextual provenance when source metadata is missing', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-key')
+    const claimText = 'Acme launched feature X.'
+    const history = savedHistory(claimText, null)
+    const sources = buildHistoricalEvidence(history)
+    expect(sources).toEqual([])
+    const fetchMock = vi.fn().mockResolvedValue(envelope({ statements: [{ text: 'The saved historical record says Acme launched feature X, but no original source is available.', kind: 'limitation', sourceIds: [] }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const answer = await new GeminiHttpProvider().generateAnswer({ query: 'What did Acme launch?', history, sources, claims: [], comparisons: [] })
+    const parsedGenerationInput = JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).contents[0].parts[0].text)
+    expect(parsedGenerationInput.history.researchSnapshots[0].claims[0]).toMatchObject({ claimText, provenance: 'previously_generated_claim', verificationStatus: 'supported' })
+    expect(parsedGenerationInput.sources).toEqual([])
+    expect(answer.text).toContain('Insufficient evidence:')
   })
 })

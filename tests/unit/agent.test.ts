@@ -247,7 +247,7 @@ describe('historical repository ownership boundary', () => {
     expect(ordinary.calls.some(({ method }) => method === 'gte' || method === 'lt' || method === 'or')).toBe(false)
   })
 
-  it('builds snapshot completed_at and unfinished created_at fallback filters', async () => {
+  it('filters only completed snapshot completion timestamps', async () => {
     const interval = { startAt: '2026-11-02T00:00:00.000Z', endAt: '2026-11-09T00:00:00.000Z' }
     const conversationId = '4e63cb00-88fd-4bb5-b271-e6a00e146a2b'
     const mock = makeQueryMock()
@@ -256,8 +256,9 @@ describe('historical repository ownership boundary', () => {
       temporalTerms: ['last week'], temporalFilter: { target: 'research_snapshots', timezone: 'UTC', intervals: [interval] },
     })
     expect(mock.calls).toContainEqual({ table: 'research_snapshots', method: 'eq', args: ['user_id', context.userId] })
+    expect(mock.calls).toContainEqual({ table: 'research_snapshots', method: 'eq', args: ['status', 'completed'] })
     expect(mock.calls).toContainEqual({ table: 'research_snapshots', method: 'eq', args: ['conversation_id', conversationId] })
-    expect(mock.calls).toContainEqual({ table: 'research_snapshots', method: 'or', args: [`and(completed_at.gte.${interval.startAt},completed_at.lt.${interval.endAt}),and(completed_at.is.null,created_at.gte.${interval.startAt},created_at.lt.${interval.endAt})`] })
+    expect(mock.calls).toContainEqual({ table: 'research_snapshots', method: 'or', args: [`and(completed_at.gte.${interval.startAt},completed_at.lt.${interval.endAt})`] })
   })
 
   it('builds memory valid-time overlap filters with open-ended interval support', async () => {
@@ -303,7 +304,7 @@ describe('orchestration sequence and errors', () => {
     const classifier = { classify: vi.fn(async () => { order.push('classify'); return { intent: 'current_research' as const, confidence: 0.9, rationale: 'Current fact requested.' } }) }
     const result = await executeAgent({ query: 'What is the latest status?' }, { ...context, referenceTimestamp: '2026-11-12T19:00:00.000Z' }, { classifier, repository })
     expect(order).toEqual(['classify', 'retrieve'])
-    expect(result).toMatchObject({ status: 'planned', searchPlan: { shouldSearchWeb: true, maxCalls: 8 }, answer: null })
+    expect(result).toMatchObject({ status: 'failed', searchPlan: { shouldSearchWeb: true, maxCalls: 8 }, answer: null, error: { code: 'PROVIDER_ERROR' } })
   })
 
   it('passes the resolved temporal filter to historical retrieval', async () => {

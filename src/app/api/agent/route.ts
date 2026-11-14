@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { AgentQuerySchema } from '@/lib/agent/contracts'
 import { executeAgent } from '@/lib/agent/orchestrator'
-import { GeminiHttpProvider, TavilyHttpProvider } from '@/lib/agent/providers'
+import { OpenRouterHttpProvider, TavilyHttpProvider } from '@/lib/agent/providers'
 import { readAgentRequestBody, getMaxAgentRequestBytes } from '@/lib/agent/request-body'
 import { SupabaseHistoricalRepository } from '@/lib/agent/retrieval'
 import { SupabaseResearchPersistenceRepository } from '@/lib/agent/persistence'
@@ -47,16 +47,18 @@ export async function POST(request: Request) {
     const profile = await supabase.from('profiles').select('timezone').eq('id', user.id).maybeSingle() as unknown as { data: { timezone: string } | null; error: unknown }
     if (!profile.error && profile.data?.timezone) timezone = sanitizeTimezone(profile.data.timezone)
 
+    const hasReasoningProvider = Boolean(process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY)
+    const hasTavily = Boolean(process.env.TAVILY_API_KEY)
     const result = await executeAgent(parsed.data, {
       userId: user.id,
       timezone,
       referenceTimestamp,
     }, {
       repository: new SupabaseHistoricalRepository(supabase),
-      classifier: process.env.GEMINI_API_KEY ? { classify: (query) => new GeminiHttpProvider().classifyIntent(query) } : undefined,
-      reasoner: process.env.GEMINI_API_KEY ? new GeminiHttpProvider() : undefined,
-      tavily: process.env.GEMINI_API_KEY ? new TavilyHttpProvider() : undefined,
-      persistence: process.env.GEMINI_API_KEY ? new SupabaseResearchPersistenceRepository(supabase) : undefined,
+      classifier: hasReasoningProvider ? { classify: (query) => new OpenRouterHttpProvider().classifyIntent(query) } : undefined,
+      reasoner: hasReasoningProvider ? new OpenRouterHttpProvider() : undefined,
+      tavily: hasTavily ? new TavilyHttpProvider() : undefined,
+      persistence: hasReasoningProvider && hasTavily ? new SupabaseResearchPersistenceRepository(supabase) : undefined,
       searchLimits: getSearchExecutionLimits(),
       maxSearchCalls: getSearchExecutionLimits().maxCalls,
     })

@@ -48,7 +48,12 @@ Open `.env.local` and fill in your credentials:
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase Project URL | Supabase Dashboard → Settings → API |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase Public / Anon API Key | Supabase Dashboard → Settings → API |
 | `SUPABASE_SECRET_KEY` | Optional server-only secret key | Supabase Dashboard → Settings → API (service_role) |
-| `GEMINI_API_KEY` | Google AI Studio Key (Phase 2) | [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| `OPENROUTER_API_KEY` | OpenRouter API key for free or paid reasoning models (preferred) | [OpenRouter Keys](https://openrouter.ai/settings/keys) |
+| `OPENROUTER_MODEL` | Required when OpenRouter is used; explicit model ID, with no automatic free-model default | [OpenRouter models](https://openrouter.ai/models) |
+| `OPENROUTER_FALLBACK_MODEL` | Optional single bounded fallback model for provider failures | Optional server-only setting |
+| `OPENROUTER_CLASSIFICATION_MODEL`, `OPENROUTER_EXTRACTION_MODEL`, `OPENROUTER_ANSWER_MODEL`, `OPENROUTER_VERIFICATION_MODEL` | Optional per-operation overrides; fall back to `OPENROUTER_MODEL` | Optional server-only settings |
+| `OPENROUTER_EXTRACTION_TIMEOUT_MS` | Claim extraction timeout, bounded to 3–30 seconds (default `15000`) | Optional server-only setting |
+| `GEMINI_API_KEY` | Google AI Studio Key (fallback) | [Google AI Studio](https://aistudio.google.com/app/apikey) |
 | `TAVILY_API_KEY` | Tavily Search Key (Phase 2) | [Tavily Dashboard](https://app.tavily.com) |
 | `AGENT_MAX_REQUEST_BYTES` | Maximum `/api/agent` request body size in bytes (default `16384`; values above `1048576` use the default) | Optional server-only setting |
 | `AGENT_MAX_SEARCH_CALLS` | Per-turn Tavily call ceiling (default `8`; hard maximum `8`) | Optional server-only setting |
@@ -62,6 +67,12 @@ Open `.env.local` and fill in your credentials:
 The search plan carries an intended call budget, and the server-side executor independently enforces the configured per-turn and per-call limits. Limits can be lowered with the server-only environment variables above; values cannot raise the hard caps.
 
 Historical retrieval ranks at most 200 newest full-text matches per record type because the current schema exposes no database-side relevance score. A relevant record outside that candidate window may not be returned; adding a rank projection or RPC can be considered separately if observed data volume requires it.
+
+Research comparisons require the same normalized proposition and compatible product/version dimensions. Pricing comparisons additionally require known amount, currency, billing period, region, plan, standard/promotional type, and (for promotions) matching discount conditions. When a dimension is missing, Minimi reports insufficient evidence. Extracted claims and final findings each receive at most one bounded evidence-support review using only the claim and its cited source text (at most two verification calls per run, each with an eight-second timeout). Unsupported claims are omitted or labeled insufficient/conflicting. These automated checks reduce unsupported claims but cannot guarantee factual truth.
+
+Agent responses use `completed` when every planned search call and the answer/persistence stages succeed (including a successful search with zero results), `partial` when evidence or findings exist but extraction, answer generation, search, or persistence was incomplete, `failed` when no usable evidence or a required provider stage fails before research can begin, `no_search` when the intent does not need web research, and `needs_clarification` when time intent is ambiguous. Failed search calls and successful empty results remain distinguishable in `searchExecution.outcomes`.
+
+Snapshot persistence uses multiple authenticated Supabase requests because the existing REST client flow is not transactional. On write failure, Minimi attempts to delete only the new pending snapshot and records whether cleanup succeeded. Historical retrieval explicitly loads completed snapshots only, so an orphaned pending record is excluded from answers. There is no automatic orphan sweeper yet; a future maintenance task should identify aged pending rows and clean them up with owner-scoped checks, while leaving active recent runs untouched.
 
 ### 3. Apply database migrations
 
