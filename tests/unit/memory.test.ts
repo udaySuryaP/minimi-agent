@@ -117,4 +117,22 @@ describe('explicit personal memory extraction', () => {
     expect(answer?.text).toContain('November 24th')
     expect(answer?.text).toContain('December 2nd')
   })
+
+  it('answers compound personal recall questions with multiple matching memories', () => {
+    const memories = extractExplicitMemories('My name is Alex and I prefer TypeScript and PostgreSQL.')
+    const answer = buildDeterministicMemoryAnswer('What is my name and what technology do I prefer?', {
+      messages: [],
+      memoryItems: memories.map((m, i) => ({
+        id: `00000000-0000-4000-8000-00000000000${i + 1}`,
+        entityName: m.entityName,
+        content: m.content,
+        validFrom: null,
+        validTo: null,
+        createdAt: '2026-11-15T10:00:00.000Z',
+      })),
+      researchSnapshots: [],
+    })
+    expect(answer?.text).toContain('Your name is Alex.')
+    expect(answer?.text).toContain('You prefer TypeScript and PostgreSQL.')
+  })
 })

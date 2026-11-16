@@ -322,6 +322,13 @@ describe('historical repository ownership boundary', () => {
     expect(mock.calls.some(({ method }) => method === 'textSearch')).toBe(false)
   })
 
+  it('preserves cross-conversation memory items for personal fact recall when conversationId is passed', async () => {
+    const mock = makeQueryMock({ memory_items: [{ id: 'b879e41c-5110-485f-a9be-7cd85a2b8ad9', entity_name: 'name', content: "The user's name is Alex.", valid_from: null, valid_to: null, created_at: '2026-11-15T10:00:00.000Z' }] })
+    const result = await new SupabaseHistoricalRepository(mock.client).retrieve({ userId: context.userId, conversationId: '4e63cb00-88fd-4bb5-b271-e6a00e146a2b', query: 'What is my name and what technology do I prefer?' })
+    expect(result.memoryItems[0]?.content).toContain('Alex')
+    expect(mock.calls.some(({ table, method, args }) => table === 'memory_items' && method === 'eq' && args[0] === 'conversation_id')).toBe(false)
+  })
+
   it('filters only completed snapshot completion timestamps', async () => {
     const interval = { startAt: '2026-11-02T00:00:00.000Z', endAt: '2026-11-09T00:00:00.000Z' }
     const conversationId = '4e63cb00-88fd-4bb5-b271-e6a00e146a2b'

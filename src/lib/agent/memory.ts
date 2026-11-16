@@ -214,11 +214,14 @@ export function buildDeterministicMemoryAnswer(query: string, history: Historica
   const personalFactRecall = /\b(?:what(?:'s| is) my|where do I|who am I|what do I|name|live|location|work|job|prefer|preference|interest|favorite|personal information|about me|did I mention|what did I say|project|building|plan to use|technolog)\b/i.test(query)
   const requestedFactTerms = (() => {
     const text = query.toLowerCase()
-    if (/\bname\b/.test(text)) return ['name']
-    if (/\b(?:where do i live|location|live)\b/.test(text)) return ['location', 'origin', 'lives in', 'from']
-    if (/\b(?:what do i do|work|job)\b/.test(text)) return ['work', 'works as', 'works at', 'works on']
-    if (/\b(?:project|building)\b/.test(text)) return ['project', 'building', 'taskpilot']
-    if (/\b(?:plan to use|technolog|typescript|postgres)\b/.test(text)) return ['future technology plan', 'plans to use', 'typescript', 'postgres']
+    const terms = new Set<string>()
+    if (/\bname\b/.test(text)) terms.add('name')
+    if (/\b(?:where do i live|location|live|from)\b/.test(text)) ['location', 'origin', 'lives in', 'from', 'live'].forEach((term) => terms.add(term))
+    if (/\b(?:what do i do|work|job)\b/.test(text)) ['work', 'works as', 'works at', 'works on', 'works for'].forEach((term) => terms.add(term))
+    if (/\b(?:prefer|preference|preferences|like|likes|favorite)\b/.test(text)) ['prefer', 'preference', 'likes', 'favorite'].forEach((term) => terms.add(term))
+    if (/\b(?:project|building)\b/.test(text)) ['project', 'building', 'taskpilot'].forEach((term) => terms.add(term))
+    if (/\b(?:plan to use|technolog|typescript|postgres)\b/.test(text)) ['future technology plan', 'plans to use', 'typescript', 'postgres', 'prefer', 'technology'].forEach((term) => terms.add(term))
+    if (terms.size > 0) return Array.from(terms)
     const meaningful = text.match(/[a-z0-9]{3,}/g)?.filter((word) => !['what', 'did', 'mention', 'anything', 'about', 'that', 'have', 'with', 'from'].includes(word)) ?? []
     return meaningful.slice(0, 4)
   })()

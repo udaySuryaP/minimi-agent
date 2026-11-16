@@ -149,8 +149,10 @@ export class SupabaseHistoricalRepository implements HistoricalRepository {
     memoriesQuery = memoriesQuery.order('created_at', { ascending: false }).order('id', { ascending: true }).range(0, candidateEnd)
     snapshotsQuery = snapshotsQuery.order('created_at', { ascending: false }).order('id', { ascending: true }).range(0, candidateEnd)
     if (input.conversationId) {
-      messagesQuery = messagesQuery.eq('conversation_id', input.conversationId)
-      memoriesQuery = memoriesQuery.eq('conversation_id', input.conversationId)
+      if (!personalMemoryRecall) {
+        messagesQuery = messagesQuery.eq('conversation_id', input.conversationId)
+        memoriesQuery = memoriesQuery.eq('conversation_id', input.conversationId)
+      }
       snapshotsQuery = snapshotsQuery.eq('conversation_id', input.conversationId)
     }
     const target = input.temporalFilter?.target

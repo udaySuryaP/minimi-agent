@@ -20,7 +20,7 @@ const MEMORY_PROMPT = [
 const ROUTE_PROMPT = 'Classify the user query as personal when it asks about saved user facts, plans, preferences, or prior user-provided context; web when it asks for current, external, or source-backed information; otherwise conversation. Return only JSON with a route field.'
 
 function configuredModel(): string | null {
-  const value = process.env.OPENROUTER_ROUTER_MODEL || process.env.OPENROUTER_MEMORY_MODEL || process.env.OPENROUTER_MODEL
+  const value = process.env.OPENROUTER_ROUTER_MODEL || process.env.OPENROUTER_MODEL || process.env.OPENROUTER_MEMORY_MODEL
   if (!value || /^your[-_]/i.test(value)) return null
   return value.trim()
 }

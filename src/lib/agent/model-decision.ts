@@ -28,11 +28,11 @@ const PROMPT = [
 ].join(' ')
 
 function modelConfig(): { provider: 'openrouter' | 'gemini'; key: string; model: string } | null {
-  if (process.env.GEMINI_API_KEY) return { provider: 'gemini', key: process.env.GEMINI_API_KEY, model: process.env.GEMINI_ROUTER_MODEL || 'gemini-2.0-flash' }
   if (process.env.OPENROUTER_API_KEY) {
     const model = process.env.OPENROUTER_ROUTER_MODEL || process.env.OPENROUTER_MODEL || process.env.OPENROUTER_MEMORY_MODEL
     if (model) return { provider: 'openrouter', key: process.env.OPENROUTER_API_KEY, model }
   }
+  if (process.env.GEMINI_API_KEY) return { provider: 'gemini', key: process.env.GEMINI_API_KEY, model: process.env.GEMINI_ROUTER_MODEL || 'gemini-2.5-flash' }
   return null
 }
 
@@ -59,7 +59,7 @@ export async function analyzeUserMessage(query: string, memoryMiss = false): Pro
           entityType: { type: 'string', enum: ['fact', 'preference', 'decision', 'topic', 'product', 'company', 'other'] },
           entityName: { type: 'string' }, content: { type: 'string' },
           validFrom: { type: ['string', 'null'] }, validTo: { type: ['string', 'null'] },
-        }, required: ['entityType', 'entityName', 'content'], additionalProperties: false } },
+        }, required: ['entityType', 'entityName', 'content', 'validFrom', 'validTo'], additionalProperties: false } },
         rationale: { type: 'string' },
       }, required: ['action', 'memories', 'rationale'], additionalProperties: false,
     }

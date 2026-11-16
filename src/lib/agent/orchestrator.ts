@@ -8,7 +8,7 @@ import type { ResearchReasoner, TavilyProvider } from './providers'
 import { getSearchExecutionLimits, type SearchExecutionLimits } from './search-executor'
 import { buildHistoricalEvidence, buildWebEvidence } from './evidence'
 import type { ResearchPersistenceRepository } from './persistence'
-import { buildDeterministicMemoryAcknowledgement, buildMemoryAcknowledgement } from './memory'
+import { buildDeterministicMemoryAcknowledgement, buildMemoryAcknowledgement, isPersonalMemoryRecall } from './memory'
 import { buildEntityAwareSearchQueries } from './query-planner'
 import { classifyPersonalQuery } from './memory-rag'
 import { PersonalMemoryService, type MemoryService } from './memory-service'
@@ -78,7 +78,7 @@ export async function executeAgent(query: AgentQuery, executionContext: Executio
     if (modelDecision?.action === 'reject' || (modelDecision?.action === 'capture' && !modelDecision.memories.length)) {
       return AgentExecutionSchema.parse({ status: 'no_search', intent, temporal, history, searchPlan: null, evidenceSources: [], answer: responses.rejection(), error: null })
     }
-    const answerHistory: HistoricalRetrieval = intent.intent === 'general_conversational'
+    const answerHistory: HistoricalRetrieval = (intent.intent === 'general_conversational' && !isPersonalMemoryRecall(query.query))
       ? { messages: [], memoryItems: [], researchSnapshots: [] }
       : history
     // This small model classifies the conversational lane for personal RAG;

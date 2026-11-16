@@ -7,17 +7,19 @@ const personalMemoryQuery = (query: string): boolean => {
   const personalCue = /\b(?:my|i|we|our|me|remember|saved|upcoming)\b/.test(text)
   const directPlanQuestion = /\bwhat(?:'s| is| are)\s+(?:planned|scheduled|on|my upcoming)\b/.test(text)
   const memoryTopic = /\b(?:plan|planned|scheduled|schedule|meetings?|appointments?|calendar|events?)\b/.test(text)
-  return (personalCue && memoryTopic) || directPlanQuestion
+  const personalFactQuestion = /\b(?:what(?:'s| is)|what do I|where do I|who am I|tell me about)\s+(?:my|me|I|name|live|do|location|work|job|prefer|preferences?|interests?|favorite|personal information)\b/i.test(text)
+    || /\b(?:what is my name|what do i prefer|what technology do i prefer|what are my preferences)\b/i.test(text)
+  return (personalCue && (memoryTopic || personalFactQuestion)) || directPlanQuestion || personalFactQuestion
 }
 
 export function classifyIntentDeterministically(query: string): IntentResult {
   const text = query.toLowerCase()
   let intent: Intent = 'general_conversational'
   if (/(compare|versus|vs\.?|compared with).*(then|before|previous|earlier|current|now|today)|(?:then|before|previous|earlier).*(?:now|today|current)|what did (?:i|we) .*\b(?:still correct|correct today|current now|today)\b/i.test(text)) intent = 'historical_current_comparison'
+  else if (/(since|changed|shipped|updated).*(pricing|price|feature|launch|release)|(?:pricing|price|feature|launch|release).*(since|changed|shipped|updated)/i.test(text)) intent = 'historical_current_comparison'
   else if (/(what did (?:i|we) (?:ask|say|decide|discuss)|our conversation|in a previous chat|when did i tell you)/i.test(text)) intent = 'historical_conversation_recall'
   else if (personalMemoryQuery(text)) intent = 'historical_conversation_recall'
   else if (/(what did (?:we|you) find|what research did (?:i|we) do|previous research|last time you researched|source(?:s)? (?:you|we) found)/i.test(text)) intent = 'historical_research_recall'
-  else if (/(since|changed|shipped|updated).*(pricing|price|feature|launch|release)|(?:pricing|price|feature|launch|release).*(since|changed|shipped|updated)/i.test(text)) intent = 'historical_current_comparison'
   else if (/(latest|current|today|right now|research|look up|search the web|as of \d{4})/i.test(text)) intent = 'current_research'
   return IntentResultSchema.parse({ intent, confidence: intent === 'general_conversational' ? 0.55 : 0.75, rationale: 'Selected by deterministic phrase rules.' })
 }
