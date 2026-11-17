@@ -135,4 +135,58 @@ describe('explicit personal memory extraction', () => {
     expect(answer?.text).toContain('Your name is Alex.')
     expect(answer?.text).toContain('You prefer TypeScript and PostgreSQL.')
   })
+
+  it('answers date-specific schedule queries and handles month typos', () => {
+    const memories = [
+      ...extractExplicitMemories('On November 28, I have a portfolio review.', { referenceYear: 2026 }),
+      ...extractExplicitMemories('On December 3, I have a meeting with a startup founder', { referenceYear: 2026 }),
+      ...extractExplicitMemories('On January 10, I have a certification exam.', { referenceYear: 2026 }),
+    ]
+    const history = {
+      messages: [],
+      memoryItems: memories.map((m, i) => ({
+        id: `00000000-0000-4000-8000-00000000000${i + 1}`,
+        entityName: m.entityName,
+        content: m.content,
+        validFrom: m.validFrom ?? null,
+        validTo: null,
+        createdAt: '2026-11-15T10:00:00.000Z',
+      })),
+      researchSnapshots: [],
+    }
+
+    const answerNov = buildDeterministicMemoryAnswer('What is planned for November 28?', history)
+    expect(answerNov?.text).toContain('portfolio review')
+
+    const answerDec = buildDeterministicMemoryAnswer('What is planned for December 3?', history)
+    expect(answerDec?.text).toContain('meeting with a startup founder')
+
+    const answerTypoNov = buildDeterministicMemoryAnswer('Is there anything on Novemeber 28?', history)
+    expect(answerTypoNov?.text).toContain('portfolio review')
+
+    const answerTypoJan = buildDeterministicMemoryAnswer('What is planned for Januvary 10?', history)
+    expect(answerTypoJan?.text).toContain('certification exam')
+
+    const answerUpcoming = buildDeterministicMemoryAnswer('What events are coming up?', history)
+    expect(answerUpcoming?.text).toContain('portfolio review')
+    expect(answerUpcoming?.text).toContain('meeting with a startup founder')
+    expect(answerUpcoming?.text).toContain('certification exam')
+  })
+
+  it('answers profession recall questions from user job context', () => {
+    const memories = extractExplicitMemories('I live in Bengaluru and work as a backend engineer.')
+    const answer = buildDeterministicMemoryAnswer('What do I do?', {
+      messages: [],
+      memoryItems: memories.map((m, i) => ({
+        id: `00000000-0000-4000-8000-00000000000${i + 1}`,
+        entityName: m.entityName,
+        content: m.content,
+        validFrom: null,
+        validTo: null,
+        createdAt: '2026-11-15T10:00:00.000Z',
+      })),
+      researchSnapshots: [],
+    })
+    expect(answer?.text).toContain('backend engineer')
+  })
 })

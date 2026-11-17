@@ -62,7 +62,8 @@ export async function executeAgent(query: AgentQuery, executionContext: Executio
       const emptyHistory: HistoricalRetrieval = { messages: [], memoryItems: [], researchSnapshots: [] }
       return AgentExecutionSchema.parse({ status: 'no_search', intent, temporal, history: emptyHistory, searchPlan, evidenceSources: [], answer: explicitMemory, error: null })
     }
-    if (modelDecision?.action === 'reject') {
+    const isPersonal = isPersonalMemoryRecall(query.query)
+    if (modelDecision?.action === 'reject' && !isPersonal) {
       const intent = classifyIntentDeterministically(query.query)
       const emptyHistory: HistoricalRetrieval = { messages: [], memoryItems: [], researchSnapshots: [] }
       return AgentExecutionSchema.parse({ status: 'no_search', intent, temporal, history: emptyHistory, searchPlan: null, evidenceSources: [], answer: responses.rejection(), error: null })
@@ -71,20 +72,20 @@ export async function executeAgent(query: AgentQuery, executionContext: Executio
     const temporalFilter = createTemporalRetrievalFilter(temporal, intent.intent, query.query) ?? undefined
     const temporalTerms = temporal.references.filter((item) => item.start !== null && item.end !== null).map((item) => item.text)
     const history: HistoricalRetrieval = await (dependencies.ledger ?? memory).retrieve({ userId: context.userId, query: query.query, conversationId: query.conversationId, temporalFilter, temporalTerms })
-    if (modelDecision?.action === 'personal' && !history.memoryItems.length && !history.messages.length) {
+    if (modelDecision?.action === 'personal' && !isPersonal && !history.memoryItems.length && !history.messages.length) {
       const fallbackDecision = await memory.analyze(query.query, true)
       modelDecision = fallbackDecision?.action === 'web' || fallbackDecision?.action === 'reject' ? fallbackDecision : { ...modelDecision, action: 'reject' }
     }
-    if (modelDecision?.action === 'reject' || (modelDecision?.action === 'capture' && !modelDecision.memories.length)) {
+    if ((modelDecision?.action === 'reject' && !isPersonal) || (modelDecision?.action === 'capture' && !modelDecision.memories.length)) {
       return AgentExecutionSchema.parse({ status: 'no_search', intent, temporal, history, searchPlan: null, evidenceSources: [], answer: responses.rejection(), error: null })
     }
-    const answerHistory: HistoricalRetrieval = (intent.intent === 'general_conversational' && !isPersonalMemoryRecall(query.query))
+    const answerHistory: HistoricalRetrieval = (intent.intent === 'general_conversational' && !isPersonal)
       ? { messages: [], memoryItems: [], researchSnapshots: [] }
       : history
     // This small model classifies the conversational lane for personal RAG;
     // the existing search plan remains authoritative for Tavily execution.
     const memoryRoute = modelDecision ? null : await classifyPersonalQuery(query.query)
-    const decision = modelDecision
+    const decision = (modelDecision && !isPersonal)
       ? { lane: modelDecision.action === 'personal' ? 'personal' as const : modelDecision.action === 'web' ? 'web' as const : 'conversation' as const, reason: 'Model decision selected the request lane.', needsMemoryFallback: modelDecision.action === 'personal' }
       : decideRequestLane(query.query, intent, memoryRoute)
     // If personal retrieval misses and the route model explicitly identifies a

@@ -15,10 +15,10 @@ const monthAliases: Record<string, string> = {
   mar: 'march', march: 'march', apr: 'april', april: 'april', may: 'may',
   jun: 'june', june: 'june', jul: 'july', july: 'july', aug: 'august', august: 'august',
   sep: 'september', sept: 'september', september: 'september', septemeber: 'september',
-  oct: 'october', october: 'october', nov: 'november', november: 'november',
+  oct: 'october', october: 'october', nov: 'november', november: 'november', novemeber: 'november',
   dec: 'december', december: 'december', decemeber: 'december',
 }
-const monthPattern = 'january|januvary|february|febuary|march|april|may|june|july|august|september|septemeber|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec'
+const monthPattern = 'january|januvary|february|febuary|march|april|may|june|july|august|september|septemeber|october|november|novemeber|december|decemeber|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec'
 
 function clean(value: string): string {
   return value.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').replace(/[\s.]+$/, '').trim().slice(0, MAX_MEMORY_VALUE)
@@ -68,7 +68,14 @@ export function isPersonalMemoryRecall(query: string): boolean {
   const personalCue = /\b(?:my|i|we|our|me|remember|saved|upcoming)\b/i.test(query)
   const memoryTopic = /\b(?:plan|planned|scheduled|schedule|meeting|appointment|calendar|events?)\b/i.test(query)
   const personalFactQuestion = /\b(?:what(?:'s| is)|what do I|where do I|who am I|tell me about)\s+(?:my|me|I|name|live|do|location|work|job|prefer|preferences?|interests?|favorite|personal information)\b/i.test(query)
-  return memoryRecallPattern.test(query) || (personalCue && memoryTopic) || personalFactQuestion
+    || /\b(?:what do i do|where do i live|what is my name|what do i prefer|what are my preferences)\b/i.test(query)
+  const upcomingEventsQuestion = /\b(?:coming up|upcoming|next|scheduled|planned)\b/i.test(query) && /\b(?:events?|plans?|schedule|meetings?|calendar|appointments?)\b/i.test(query)
+  const datePlansQuestion = /\b(?:is there anything|anything planned|anything scheduled|anything on|what do I have|what(?:'s| is| are))\s+(?:planned|scheduled|on|for|in|happening)\b/i.test(query)
+  return memoryRecallPattern.test(query)
+    || (personalCue && memoryTopic)
+    || personalFactQuestion
+    || upcomingEventsQuestion
+    || datePlansQuestion
     || /\b(?:did I mention|what did I say|what project am I building|what project context)\b/i.test(query)
     || /\bwhat(?:'s| is| are)\s+(?:on|planned|scheduled|my upcoming)\b/i.test(query)
 }
@@ -148,7 +155,7 @@ function extractSingleExplicitMemories(query: string, options: { referenceYear?:
     { entityType: 'fact', entityName: 'name', content: `The user's name is ${clean(compoundFacts[1])}.` },
     { entityType: 'preference', entityName: 'preference', content: `The user prefers ${clean(compoundFacts[2])}.` },
   ]
-  const compoundWork = value.match(/^i live in\s+(.+?)\s+and\s+i work\s+(at|for|on|as)\s+(.+)$/i)
+  const compoundWork = value.match(/^i live in\s+(.+?)\s+and\s+(?:i\s+)?work\s+(at|for|on|as)\s+(.+)$/i)
   if (compoundWork) return [
     { entityType: 'fact', entityName: 'location', content: `The user lives in ${clean(compoundWork[1])}.` },
     { entityType: 'fact', entityName: 'work', content: `The user works ${compoundWork[2].toLowerCase()} ${clean(compoundWork[3])}.` },
@@ -210,7 +217,7 @@ export function buildDeterministicMemoryAnswer(query: string, history: Historica
     && /\b(meetings?|appointments?|calls?|interviews?|exams?|tests?|classes|lessons?|reviews?|assignments?|submissions?|certification|schedule|scheduled|founder|deadlines?|plans?|planned|date|birthdays?|trips?|flights?|presentations?)\b/i.test(message.content))
   const derivedFactMessages = history.messages.filter((message) => message.role === 'user')
     .flatMap((message) => extractExplicitMemories(message.content).map((memory) => ({ content: memory.content, createdAt: message.createdAt })))
-  const scheduleRecall = /\b(?:plan|planned|scheduled|schedule|meeting|appointment|calendar|event|upcoming|exam|test)\b/i.test(query)
+  const scheduleRecall = /\b(?:plan|planned|scheduled|schedule|meeting|appointment|calendar|event|upcoming|exam|test|coming up)\b/i.test(query)
   const personalFactRecall = /\b(?:what(?:'s| is) my|where do I|who am I|what do I|name|live|location|work|job|prefer|preference|interest|favorite|personal information|about me|did I mention|what did I say|project|building|plan to use|technolog)\b/i.test(query)
   const requestedFactTerms = (() => {
     const text = query.toLowerCase()
@@ -227,6 +234,7 @@ export function buildDeterministicMemoryAnswer(query: string, history: Historica
   })()
   const savedMemories = history.memoryItems.filter((memory) => {
     if (!scheduleRecall && personalFactRecall) return !/schedule|meeting|appointment|exam|event/i.test(`${memory.entityName} ${memory.content}`)
+    if (scheduleRecall && !personalFactRecall) return /\b(schedule|scheduled|meetings?|appointments?|calls?|interviews?|exams?|tests?|classes|lessons?|reviews?|assignments?|submissions?|certification|founder|deadlines?|plans?|planned|date|birthdays?|trips?|flights?|presentations?|portfolio)\b/i.test(`${memory.entityName} ${memory.content}`)
     return /\b(schedule|scheduled|meetings?|appointments?|calls?|interviews?|exams?|tests?|classes|lessons?|reviews?|assignments?|submissions?|certification|founder|deadlines?|plans?|planned|date|birthdays?|trips?|flights?|presentations?|name|location|work|education|preference|interest)\b/i.test(`${memory.entityName} ${memory.content}`)
   })
   const requestedDates = dateKeys(query)

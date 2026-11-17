@@ -1,15 +1,10 @@
 import { IntentResultSchema, type Intent, type IntentResult } from './contracts'
+import { isPersonalMemoryRecall } from './memory'
 
 export interface IntentClassifier { classify(query: string): Promise<IntentResult> }
 
 const personalMemoryQuery = (query: string): boolean => {
-  const text = query.toLowerCase()
-  const personalCue = /\b(?:my|i|we|our|me|remember|saved|upcoming)\b/.test(text)
-  const directPlanQuestion = /\bwhat(?:'s| is| are)\s+(?:planned|scheduled|on|my upcoming)\b/.test(text)
-  const memoryTopic = /\b(?:plan|planned|scheduled|schedule|meetings?|appointments?|calendar|events?)\b/.test(text)
-  const personalFactQuestion = /\b(?:what(?:'s| is)|what do I|where do I|who am I|tell me about)\s+(?:my|me|I|name|live|do|location|work|job|prefer|preferences?|interests?|favorite|personal information)\b/i.test(text)
-    || /\b(?:what is my name|what do i prefer|what technology do i prefer|what are my preferences)\b/i.test(text)
-  return (personalCue && (memoryTopic || personalFactQuestion)) || directPlanQuestion || personalFactQuestion
+  return isPersonalMemoryRecall(query)
 }
 
 export function classifyIntentDeterministically(query: string): IntentResult {
